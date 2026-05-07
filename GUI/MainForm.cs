@@ -1053,6 +1053,13 @@ namespace GUI
                 return viewer;
             }
 
+            else if (Types.Viewers.RefragRts.IsAccepted(vrfGuiContext.FileName))
+            {
+                var viewer = new Types.Viewers.RefragRts(vrfGuiContext);
+                await viewer.LoadAsync(stream).ConfigureAwait(false);
+                return viewer;
+            }
+
             var byteViewer = new Types.Viewers.ByteViewer(vrfGuiContext);
             await byteViewer.LoadAsync(stream).ConfigureAwait(false);
             return byteViewer;

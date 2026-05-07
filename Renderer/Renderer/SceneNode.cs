@@ -59,6 +59,14 @@ namespace ValveResourceFormat.Renderer
         }
 
         /// <summary>
+        /// Sets the bounding box to infinite extents so the node is never frustum-culled.
+        /// </summary>
+        public void SetInfiniteBounds()
+        {
+            LocalBoundingBox = new AABB(new Vector3(float.MinValue / 2), new Vector3(float.MaxValue / 2));
+        }
+
+        /// <summary>
         /// Gets the name of this node.
         /// </summary>
         public string? Name { get; init; }

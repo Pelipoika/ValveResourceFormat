@@ -175,16 +175,24 @@ namespace ValveResourceFormat.Renderer.World
         /// Navigation mesh loading is parallelized with resource preloading when references are provided.
         /// </summary>
         /// <param name="mapResourceReferences">Optional external reference list from the map resource, used to preload assets in parallel.</param>
-        public void Load(ResourceExtRefList? mapResourceReferences = null)
+        /// <param name="skipVisibility">If true, skips loading world visibility data.</param>
+        /// <param name="skipEntities">If true, skips loading entities.</param>
+        public void Load(ResourceExtRefList? mapResourceReferences = null, bool skipVisibility = false, bool skipEntities = false)
         {
             var navMeshTask = Task.Run(LoadNavigationMesh);
 
             ParallelPreloadResources(mapResourceReferences);
             LoadWorldLightingInfo();
-            LoadEntities();
+            if (!skipEntities)
+            {
+                LoadEntities();
+            }
             LoadWorldNodes();
             LoadWorldPhysics();
-            LoadWorldVisibility();
+            if (!skipVisibility)
+            {
+                LoadWorldVisibility();
+            }
 
             navMeshTask.Wait();
         }
