@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using GUI.Controls;
 using GUI.Utils;
 using ValveResourceFormat.Renderer;
 using ValveResourceFormat.Renderer.SceneNodes;
@@ -49,8 +50,9 @@ namespace GUI.Types.GLViewers
 
         private readonly List<SceneNode> overlayNodes = [];
 
-        private Label? tickLabel;
-        private Label? spanCountLabel;
+        private Label?                 tickLabel;
+        private Label?                 spanCountLabel;
+        private GLViewerSliderControl? tickScrubber;
 
         // ── Source-engine constants ───────────────────────────────────────────
 
@@ -186,7 +188,7 @@ namespace GUI.Types.GLViewers
 
                 if (tickMax > tickMin)
                 {
-                    var scrubber = UiControl.AddTrackBar(v =>
+                    tickScrubber = UiControl.AddTrackBar(v =>
                                                          {
                                                              currentTick  = tickMin + (int)(v * (tickMax - tickMin));
                                                              overlayDirty = true;
@@ -199,7 +201,35 @@ namespace GUI.Types.GLViewers
                                                          }
                                                         );
 
-                    scrubber.Slider.Value = 0f;
+                    tickScrubber.Slider.Value = 0f;
+
+                    var jumpInput = RendererControl.CreateFloatInput(
+                                                                     "Jump to Tick",
+                                                                     v =>
+                                                                     {
+                                                                         var tick = Math.Clamp((int)v, tickMin, tickMax);
+                                                                         currentTick  = tick;
+                                                                         overlayDirty = true;
+                                                                         var sliderVal = (tickMax > tickMin)
+                                                                             ? (float)(tick - tickMin) / (tickMax - tickMin)
+                                                                             : 0f;
+
+                                                                         GLControl?.BeginInvoke(() =>
+                                                                                                {
+                                                                                                    if (tickScrubber != null)
+                                                                                                        tickScrubber.Slider.Value = sliderVal;
+
+                                                                                                    tickLabel?.Text      = TickLabelText();
+                                                                                                    spanCountLabel?.Text = SpanCountText();
+                                                                                                }
+                                                                                               );
+                                                                     },
+                                                                     startValue: tickMin,
+                                                                     minValue: tickMin,
+                                                                     maxValue: tickMax
+                                                                    );
+
+                    UiControl.AddControl(jumpInput);
                 }
             }
 
@@ -435,6 +465,8 @@ namespace GUI.Types.GLViewers
             tickLabel = null;
             spanCountLabel?.Dispose();
             spanCountLabel = null;
+            tickScrubber?.Dispose();
+            tickScrubber = null;
         }
     }
 }
