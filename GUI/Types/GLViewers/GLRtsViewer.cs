@@ -53,6 +53,7 @@ namespace GUI.Types.GLViewers
         private Label?                 tickLabel;
         private Label?                 spanCountLabel;
         private GLViewerSliderControl? tickScrubber;
+        private ulong                  teleportTargetId;
 
         // ── Source-engine constants ───────────────────────────────────────────
 
@@ -233,7 +234,74 @@ namespace GUI.Types.GLViewers
                 }
             }
 
+            if (players.Count > 0)
+            {
+                using (UiControl.BeginGroup("Camera"))
+                {
+                    var playerLabels = players
+                        .OrderBy(kv => kv.Value.Team)
+                        .Select(kv =>
+                                {
+                                    var teamStr = kv.Value.Team switch
+                                    {
+                                        2 => "T",
+                                        3 => "CT",
+                                        _ => "?"
+                                    };
+
+                                    return $"{kv.Key} [{teamStr}]";
+                                }
+                               )
+                        .ToList();
+
+                    // Populate SteamIds in the same order
+                    var orderedSteamIds = players
+                        .OrderBy(kv => kv.Value.Team)
+                        .Select(kv => kv.Key)
+                        .ToList();
+
+                    if (orderedSteamIds.Count > 0)
+                        teleportTargetId = orderedSteamIds[0];
+
+                    var playerCombo = UiControl.AddSelection(
+                                                             "Target Player",
+                                                             (_, idx) =>
+                                                             {
+                                                                 if (idx >= 0 && idx < orderedSteamIds.Count)
+                                                                     teleportTargetId = orderedSteamIds[idx];
+                                                             }
+                                                            );
+
+                    playerCombo.Items.AddRange([.. playerLabels]);
+                    if (playerCombo.Items.Count > 0)
+                        playerCombo.SelectedIndex = 0;
+
+                    var teleportButton = new ThemedButton
+                    {
+                        Text     = "Teleport Camera to Player",
+                        AutoSize = true,
+                    };
+
+                    teleportButton.Click += (_, _) => TeleportCameraToTarget();
+                    UiControl.AddControl(teleportButton);
+                }
+            }
+
             base.AddUiControls();
+        }
+
+        private void TeleportCameraToTarget()
+        {
+            var stateMap = GetStateForTick(currentTick);
+            if (stateMap == null || !stateMap.TryGetValue(teleportTargetId, out var state))
+                return;
+
+            var eyePos = EyePosition(state);
+            var yawRad = float.DegreesToRadians(state.VerticalAngle);
+            var pitchRad = -float.DegreesToRadians(state.HorizontalAngle);
+
+            Input.SaveCameraForTransition();
+            Input.Camera.SetLocationPitchYaw(eyePos, pitchRad, yawRad);
         }
 
         private string TickLabelText() =>
