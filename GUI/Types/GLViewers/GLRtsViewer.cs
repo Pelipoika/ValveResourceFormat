@@ -243,24 +243,31 @@ namespace GUI.Types.GLViewers
         {
             var duckFraction = state.DuckAmount / 100f;
             var eyeZ = state.FeetPosition.Z + EyeHeightStanding - duckFraction * EyeHeightCrouchDelta;
-            return new Vector3(state.FeetPosition.X, state.FeetPosition.Y, eyeZ);
+            return state.FeetPosition with { Z = eyeZ };
         }
 
         private static Vector3 ViewDirection(PlayerTickState state)
         {
             var yaw = float.DegreesToRadians(state.HorizontalAngle);
-            var pitch = float.DegreesToRadians(-state.VerticalAngle); // Source pitch is inverted
+            var pitch = float.DegreesToRadians(state.VerticalAngle);
             return new Vector3(
-                               MathF.Cos(pitch) * MathF.Cos(yaw),
-                               MathF.Cos(pitch) * MathF.Sin(yaw),
-                               MathF.Sin(pitch)
+                               MathF.Cos(yaw) * MathF.Cos(pitch),
+                               MathF.Cos(yaw) * MathF.Sin(pitch),
+                               -MathF.Sin(yaw)
                               );
         }
 
         private Color32 ColorForPlayer(ulong steamId)
         {
             if (players.TryGetValue(steamId, out var info))
-                return info.Team == 2 ? ColorT : info.Team == 3 ? ColorCT : ColorUnknown;
+            {
+                return info.Team switch
+                {
+                    2 => ColorT,
+                    3 => ColorCT,
+                    _ => ColorUnknown
+                };
+            }
 
             return ColorUnknown;
         }
@@ -283,8 +290,8 @@ namespace GUI.Types.GLViewers
 
             var right = Vector3.Normalize(Vector3.Cross(forward, up));
 
-            var base1 = tip + forward * ArrowLength + right * ArrowHalfWidth;
-            var base2 = tip + forward * ArrowLength - right * ArrowHalfWidth;
+            var base1 = tip                         + forward * ArrowLength + right * ArrowHalfWidth;
+            var base2 = tip + forward * ArrowLength - right   * ArrowHalfWidth;
 
             var arm1 = new LineSceneNode(Scene, tip, base1, color, color) { LayerName = "RTS Visibility" };
             var arm2 = new LineSceneNode(Scene, tip, base2, color, color) { LayerName = "RTS Visibility" };
