@@ -140,9 +140,10 @@ namespace GUI.Types.Viewers
                     var spans = BuildSpans();
                     var players = BuildPlayers();
                     var ticks = BuildTicks();
+                    var smokes = BuildSmokes();
 
                     rendererContext = mapContext.CreateRendererContext();
-                    glViewer        = new GLRtsViewer(mapContext, rendererContext, mapName, spans, players, ticks);
+                    glViewer        = new GLRtsViewer(mapContext, rendererContext, mapName, spans, players, ticks, smokes);
                     glViewer.InitializeLoad();
                     rendererContext = null;
                 }
@@ -368,6 +369,27 @@ namespace GUI.Types.Viewers
             return result;
         }
 
+        private List<GLRtsViewer.RTSSmoke> BuildSmokes()
+        {
+            const int SmokeDurationTicks = 1280; // 64 tick/s × 20 s
+
+            var ticks = request?.RayTraceRequest?.Ticks ?? [];
+            var result = new List<GLRtsViewer.RTSSmoke>();
+
+            foreach (var tick in ticks)
+            {
+                foreach (var smokeEvent in tick.Smokes)
+                {
+                    var spawnTick = (int)tick.Id;
+                    var destroyTick = spawnTick + SmokeDurationTicks;
+                    var pos = new Vector3(smokeEvent.Position.X, smokeEvent.Position.Y, smokeEvent.Position.Z);
+                    result.Add(new GLRtsViewer.RTSSmoke(pos, destroyTick));
+                }
+            }
+
+            return result;
+        }
+
         // ── text tabs ─────────────────────────────────────────────────────────
 
         private void CreateSummaryTab(ThemedTabControl tabControl)
@@ -470,9 +492,11 @@ namespace GUI.Types.Viewers
 
         private sealed class RtRayTraceRequest
         {
-            public List<RtPlayer> Players { get; }              = [];
-            public List<RtTick>   Ticks   { get; }              = [];
-            public string         MapName { get; private set; } = string.Empty;
+            public List<RtPlayer>          Players          { get; }              = [];
+            public List<RtTick>            Ticks            { get; }              = [];
+            public string                  MapName          { get; private set; } = string.Empty;
+            public List<RtEventDescriptor> EventDescriptors { get; }              = [];
+            public List<RtDoorEvent>       DoorEvents       { get; }              = [];
 
             public static RtRayTraceRequest Parse(byte[] data)
             {
@@ -485,6 +509,8 @@ namespace GUI.Types.Viewers
                         case 1: msg.Players.Add(RtPlayer.Parse(r.ReadBytes())); break; // players
                         case 2: msg.Ticks.Add(RtTick.Parse(r.ReadBytes())); break; // ticks
                         case 3: msg.MapName = r.ReadString(); break; // map_name
+                        case 4: msg.EventDescriptors.Add(RtEventDescriptor.Parse(r.ReadBytes())); break; // event_descriptors
+                        case 5: msg.DoorEvents.Add(RtDoorEvent.Parse(r.ReadBytes())); break; // door_events
                         default: r.Skip(wt); break;
                     }
                 }
@@ -520,6 +546,8 @@ namespace GUI.Types.Viewers
         {
             public uint                Id           { get; private set; }
             public List<RtPlayerState> PlayerStates { get; } = [];
+            public List<RtSmokeEvent>  Smokes       { get; } = [];
+            public List<RtEvent>       Events       { get; } = [];
 
             public static RtTick Parse(byte[] data)
             {
@@ -531,11 +559,115 @@ namespace GUI.Types.Viewers
                     {
                         case 1: t.Id = (uint)r.ReadVarint(); break; // id
                         case 2: t.PlayerStates.Add(RtPlayerState.Parse(r.ReadBytes())); break; // player_states
+                        case 3: t.Smokes.Add(RtSmokeEvent.Parse(r.ReadBytes())); break; // smokes
+                        case 4: t.Events.Add(RtEvent.Parse(r.ReadBytes())); break; // events
                         default: r.Skip(wt); break;
                     }
                 }
 
                 return t;
+            }
+        }
+
+        private sealed class RtEvent
+        {
+            public uint Id { get; private set; }
+
+            public static RtEvent Parse(byte[] data)
+            {
+                var e = new RtEvent();
+                var r = new ProtoReader(data);
+                while (r.TryReadTag(out var fn, out var wt))
+                {
+                    switch (fn)
+                    {
+                        case 1: e.Id = (uint)r.ReadVarint(); break; // id
+                        default: r.Skip(wt); break;
+                    }
+                }
+
+                return e;
+            }
+        }
+
+        private sealed class RtEventDescriptor
+        {
+            public uint   Id   { get; private set; }
+            public string Name { get; private set; } = string.Empty;
+
+            public static RtEventDescriptor Parse(byte[] data)
+            {
+                var d = new RtEventDescriptor();
+                var r = new ProtoReader(data);
+                while (r.TryReadTag(out var fn, out var wt))
+                {
+                    switch (fn)
+                    {
+                        case 1: d.Id   = (uint)r.ReadVarint(); break; // id
+                        case 2: d.Name = r.ReadString(); break; // name
+                        default: r.Skip(wt); break;
+                    }
+                }
+
+                return d;
+            }
+        }
+
+        private sealed class RtDoorEvent
+        {
+            public ulong  Id         { get; private set; }
+            public int    Tick       { get; private set; }
+            public string EntityType { get; private set; } = string.Empty;
+            public float  X          { get; private set; }
+            public float  Y          { get; private set; }
+            public float  Z          { get; private set; }
+            public float  AngX       { get; private set; }
+            public float  AngY       { get; private set; }
+            public string EventName  { get; private set; } = string.Empty;
+
+            public static RtDoorEvent Parse(byte[] data)
+            {
+                var d = new RtDoorEvent();
+                var r = new ProtoReader(data);
+                while (r.TryReadTag(out var fn, out var wt))
+                {
+                    switch (fn)
+                    {
+                        case 1: d.Id         = r.ReadVarint(); break; // id (uint64)
+                        case 2: d.Tick       = (int)r.ReadVarint(); break; // tick
+                        case 3: d.EntityType = r.ReadString(); break; // entity_type
+                        case 4: d.X          = r.ReadFloat(); break; // x
+                        case 5: d.Y          = r.ReadFloat(); break; // y
+                        case 6: d.Z          = r.ReadFloat(); break; // z
+                        case 7: d.AngX       = r.ReadFloat(); break; // ang_x
+                        case 8: d.AngY       = r.ReadFloat(); break; // ang_y
+                        case 9: d.EventName  = r.ReadString(); break; // event_name
+                        default: r.Skip(wt); break;
+                    }
+                }
+
+                return d;
+            }
+        }
+
+        private sealed class RtSmokeEvent
+        {
+            public RtPosition Position { get; private set; } = new();
+
+            public static RtSmokeEvent Parse(byte[] data)
+            {
+                var s = new RtSmokeEvent();
+                var r = new ProtoReader(data);
+                while (r.TryReadTag(out var fn, out var wt))
+                {
+                    switch (fn)
+                    {
+                        case 1: s.Position = RtPosition.Parse(r.ReadBytes()); break; // position
+                        default: r.Skip(wt); break;
+                    }
+                }
+
+                return s;
             }
         }
 
@@ -743,6 +875,19 @@ namespace GUI.Types.Viewers
             }
 
             public string ReadString() => Encoding.UTF8.GetString(ReadBytes());
+
+            public float ReadFloat()
+            {
+                if (_pos + 4 > _data.Length)
+                {
+                    _pos = _data.Length;
+                    return 0f;
+                }
+
+                var value = System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(_data.Slice(_pos, 4));
+                _pos += 4;
+                return value;
+            }
 
             public byte[] ReadBytes()
             {

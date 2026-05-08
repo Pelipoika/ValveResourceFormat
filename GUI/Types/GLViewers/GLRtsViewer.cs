@@ -20,6 +20,9 @@ namespace GUI.Types.GLViewers
 
         public sealed record PlayerInfo(ulong SteamId, uint Team);
 
+        /// <summary>An active smoke grenade instance. Active from spawn until DestroyTick (exclusive).</summary>
+        public sealed record RTSSmoke(Vector3 Position, int DestroyTick);
+
         /// <summary>Per-player state at a single tick.</summary>
         public sealed record PlayerTickState(
             Vector3 FeetPosition,
@@ -35,6 +38,9 @@ namespace GUI.Types.GLViewers
         // tickId → (steamId → state)
         private readonly IReadOnlyDictionary<int, Dictionary<ulong, PlayerTickState>> ticks;
 
+        // tickId → list of smokes active at that tick (pre-filtered at build time)
+        private readonly Dictionary<int, IReadOnlyList<RTSSmoke>> smokesByTick;
+
         private readonly string             mapName;
         private readonly int                tickMin;
         private readonly int                tickMax;
@@ -46,6 +52,7 @@ namespace GUI.Types.GLViewers
         private          bool showVisLines = true;
         private          bool showPlayers  = true;
         private          bool showViewRays;
+        private          bool showSmokes = true;
         private volatile bool overlayDirty;
 
         private readonly List<SceneNode> overlayNodes = [];
@@ -82,6 +89,9 @@ namespace GUI.Types.GLViewers
         private static readonly Color32 ColorUnknown = new(180, 180, 180, 200);
         private static readonly Color32 VisLineColor = new(255, 255, 0, 240);
         private static readonly Color32 ViewRayColor = new(255, 255, 255, 180);
+        private static readonly Color32 SmokeColor   = new(160, 200, 160, 60); // translucent green-grey
+
+        private const float SmokeRadius = 150f; // world units (matches server-side constant)
 
         // ── Constructor ──────────────────────────────────────────────────────
 
@@ -90,8 +100,9 @@ namespace GUI.Types.GLViewers
             RendererContext                                               rendererContext,
             string                                                        mapName,
             IReadOnlyList<VisSpan>                                        spans,
-            IReadOnlyDictionary<ulong, PlayerInfo>?                       players = null,
-            IReadOnlyDictionary<int, Dictionary<ulong, PlayerTickState>>? ticks   = null)
+            IReadOnlyDictionary<ulong, PlayerInfo>?                       players    = null,
+            IReadOnlyDictionary<int, Dictionary<ulong, PlayerTickState>>? ticks      = null,
+            IReadOnlyList<RTSSmoke>?                                      smokesList = null)
             : base(vrfGuiContext, rendererContext)
         {
             this.mapName = mapName;
@@ -105,6 +116,9 @@ namespace GUI.Types.GLViewers
                 : (IReadOnlyList<int>)Array.Empty<int>();
 
             sortedTickIds = tickIds;
+
+            // Pre-index smokes by tick — must come after sortedTickIds is assigned
+            smokesByTick = BuildSmokesByTick(smokesList ?? []);
 
             if (spans.Count > 0)
             {
@@ -189,6 +203,16 @@ namespace GUI.Types.GLViewers
                                       v =>
                                       {
                                           showViewRays = v;
+                                          overlayDirty = true;
+                                      }
+                                     );
+
+                UiControl.AddCheckBox(
+                                      "Smoke Grenades",
+                                      showSmokes,
+                                      v =>
+                                      {
+                                          showSmokes   = v;
                                           overlayDirty = true;
                                       }
                                      );
@@ -402,6 +426,29 @@ namespace GUI.Types.GLViewers
         private IEnumerable<VisSpan> ActiveSpansAt(int tick) =>
             spans.Where(s => tick >= s.FirstTick && tick <= s.LastTick);
 
+        private IReadOnlyList<RTSSmoke> ActiveSmokesAt(int tick) =>
+            smokesByTick.TryGetValue(tick, out var list) ? list : [];
+
+        /// <summary>
+        /// Builds a lookup from tickId → active smokes for that tick.
+        /// A smoke is active at tick T if T &lt; smoke.DestroyTick.
+        /// </summary>
+        private Dictionary<int, IReadOnlyList<RTSSmoke>> BuildSmokesByTick(IReadOnlyList<RTSSmoke> allSmokes)
+        {
+            if (allSmokes.Count == 0 || sortedTickIds.Count == 0)
+                return new Dictionary<int, IReadOnlyList<RTSSmoke>>();
+
+            var result = new Dictionary<int, IReadOnlyList<RTSSmoke>>(sortedTickIds.Count);
+            foreach (var tickId in sortedTickIds)
+            {
+                var active = allSmokes.Where(s => tickId < s.DestroyTick).ToList();
+                if (active.Count > 0)
+                    result[tickId] = active;
+            }
+
+            return result;
+        }
+
         /// <summary>Returns the nearest tick state for a given tick id (exact or closest preceding).</summary>
         private Dictionary<ulong, PlayerTickState>? GetStateForTick(int tick)
         {
@@ -597,6 +644,23 @@ namespace GUI.Types.GLViewers
                     {
                         AddArrowhead(tgtPos, srcPos, VisLineColor);
                     }
+                }
+            }
+
+            // ── Smoke spheres ────────────────────────────────────────────
+            if (showSmokes)
+            {
+                var activeSmokes = ActiveSmokesAt(currentTick);
+                foreach (var smoke in activeSmokes)
+                {
+                    var sphere = new SphereSceneNode(Scene, smoke.Position, SmokeRadius, SmokeColor)
+                    {
+                        LayerName = "RTS Smokes",
+                    };
+
+                    sphere.SetInfiniteBounds();
+                    Scene.Add(sphere, false);
+                    overlayNodes.Add(sphere);
                 }
             }
         }
