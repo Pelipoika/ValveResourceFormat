@@ -64,6 +64,9 @@ namespace GUI.Types.GLViewers
         // World-space billboard labels for the click-ray FOV annotations
         private readonly List<(Vector3 WorldPos, string Label, Color32 Color)> clickRayLabels = [];
 
+        // World-space billboard labels showing SteamId above each player capsule
+        private readonly List<(Vector3 WorldPos, string Label, Color32 Color)> playerSteamIdLabels = [];
+
         // ── Source-engine constants ───────────────────────────────────────────
 
         // Eye height offsets in Source units (ref: addendum spec)
@@ -494,6 +497,7 @@ namespace GUI.Types.GLViewers
 
             clickRayNodes.Clear();
             clickRayLabels.Clear();
+            playerSteamIdLabels.Clear();
 
             var stateMap = GetStateForTick(currentTick);
             var activeSpans = ActiveSpansAt(currentTick).ToList();
@@ -533,6 +537,10 @@ namespace GUI.Types.GLViewers
                         Scene.Add(capsule, false);
                         overlayNodes.Add(capsule);
                         capsuleSteamIds[capsule] = steamId;
+
+                        // Label above the capsule showing the SteamId
+                        var labelPos = new Vector3(state.FeetPosition.X, state.FeetPosition.Y, eyePos.Z + PlayerRadius + 10f);
+                        playerSteamIdLabels.Add((labelPos, steamId.ToString(), color));
                     }
 
                     if (showViewRays)
@@ -610,6 +618,22 @@ namespace GUI.Types.GLViewers
         {
             base.OnPaint(frameTime);
 
+            foreach (var (worldPos, label, color) in playerSteamIdLabels)
+            {
+                TextRenderer.AddTextBillboard(
+                                              worldPos,
+                                              new ValveResourceFormat.Renderer.TextRenderer.TextRenderRequest
+                                              {
+                                                  Text             = label,
+                                                  Scale            = 8f,
+                                                  Color            = color,
+                                                  CenterHorizontal = true,
+                                                  CenterVertical   = true,
+                                              },
+                                              Renderer.Camera
+                                             );
+            }
+
             foreach (var (worldPos, label, color) in clickRayLabels)
             {
                 TextRenderer.AddTextBillboard(
@@ -638,6 +662,9 @@ namespace GUI.Types.GLViewers
             var node = Scene.Find(pixelInfo.ObjectId);
             if (node == null || !capsuleSteamIds.TryGetValue(node, out var steamId))
                 return;
+
+            // Copy SteamId to clipboard — must run on the UI (STA) thread
+            GLControl?.Invoke(() => Clipboard.SetText(steamId.ToString()));
 
             TraceRaysFromPlayer(steamId);
         }
