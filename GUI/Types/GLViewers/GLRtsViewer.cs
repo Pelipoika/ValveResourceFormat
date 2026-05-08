@@ -223,8 +223,7 @@ namespace GUI.Types.GLViewers
 
                                                                          GLControl?.BeginInvoke(() =>
                                                                                                 {
-                                                                                                    if (tickScrubber != null)
-                                                                                                        tickScrubber.Slider.Value = sliderVal;
+                                                                                                    tickScrubber?.Slider.Value = sliderVal;
 
                                                                                                     tickLabel?.Text      = TickLabelText();
                                                                                                     spanCountLabel?.Text = SpanCountText();
@@ -508,8 +507,8 @@ namespace GUI.Types.GLViewers
                     {
                         var duckFraction = state.DuckAmount / 100f;
                         var capsuleHalf = PlayerHalfHeight - duckFraction * (PlayerHalfHeight * 0.5f);
-                        var bottom = new Vector3(state.FeetPosition.X, state.FeetPosition.Y, state.FeetPosition.Z + capsuleHalf);
-                        var top = new Vector3(state.FeetPosition.X,    state.FeetPosition.Y, eyePos.Z);
+                        var bottom = state.FeetPosition with { Z = state.FeetPosition.Z + capsuleHalf };
+                        var top = new Vector3(state.FeetPosition.X, state.FeetPosition.Y, eyePos.Z);
                         var capsule = new CapsuleSceneNode(Scene, bottom, top, PlayerRadius, color)
                         {
                             LayerName  = "RTS Players",
