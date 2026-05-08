@@ -61,6 +61,9 @@ namespace GUI.Types.GLViewers
         // Ray lines drawn when a player capsule is clicked
         private readonly List<SceneNode> clickRayNodes = [];
 
+        // World-space billboard labels for the click-ray FOV annotations
+        private readonly List<(Vector3 WorldPos, string Label, Color32 Color)> clickRayLabels = [];
+
         // ── Source-engine constants ───────────────────────────────────────────
 
         // Eye height offsets in Source units (ref: addendum spec)
@@ -325,6 +328,7 @@ namespace GUI.Types.GLViewers
                 Scene.Remove(n, false);
 
             clickRayNodes.Clear();
+            clickRayLabels.Clear();
 
             var stateMap = GetStateForTick(currentTick);
             if (stateMap == null || !stateMap.TryGetValue(sourceSteamId, out var srcState))
@@ -335,6 +339,7 @@ namespace GUI.Types.GLViewers
                 return;
 
             var srcEye = EyePosition(srcState);
+            var srcViewDir = ViewDirection(srcState);
 
             foreach (var (targetId, tgtState) in stateMap)
             {
@@ -368,6 +373,13 @@ namespace GUI.Types.GLViewers
                 line.SetInfiniteBounds();
                 Scene.Add(line, false);
                 clickRayNodes.Add(line);
+
+                // Compute FOV angle between the source's view direction and the direction to target
+                var toTarget = Vector3.Normalize(tgtEye - srcEye);
+                var dot = Math.Clamp(Vector3.Dot(srcViewDir, toTarget), -1f, 1f);
+                var fovDeg = float.RadiansToDegrees(MathF.Acos(dot));
+                var midPoint = (srcEye + lineEnd) * 0.5f;
+                clickRayLabels.Add((midPoint, $"{fovDeg:F1}°", startColor));
             }
         }
 
@@ -481,6 +493,7 @@ namespace GUI.Types.GLViewers
                 Scene.Remove(node, false);
 
             clickRayNodes.Clear();
+            clickRayLabels.Clear();
 
             var stateMap = GetStateForTick(currentTick);
             var activeSpans = ActiveSpansAt(currentTick).ToList();
@@ -590,6 +603,27 @@ namespace GUI.Types.GLViewers
             {
                 overlayDirty = false;
                 RebuildOverlay();
+            }
+        }
+
+        protected override void OnPaint(float frameTime)
+        {
+            base.OnPaint(frameTime);
+
+            foreach (var (worldPos, label, color) in clickRayLabels)
+            {
+                TextRenderer.AddTextBillboard(
+                                              worldPos,
+                                              new ValveResourceFormat.Renderer.TextRenderer.TextRenderRequest
+                                              {
+                                                  Text             = label,
+                                                  Scale            = 16f,
+                                                  Color            = color,
+                                                  CenterHorizontal = true,
+                                                  CenterVertical   = true,
+                                              },
+                                              Renderer.Camera
+                                             );
             }
         }
 
