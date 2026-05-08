@@ -55,6 +55,12 @@ namespace GUI.Types.GLViewers
         private GLViewerSliderControl? tickScrubber;
         private ulong                  teleportTargetId;
 
+        // Maps each player capsule node → its SteamId so OnPicked can identify it
+        private readonly Dictionary<SceneNode, ulong> capsuleSteamIds = [];
+
+        // Ray lines drawn when a player capsule is clicked
+        private readonly List<SceneNode> clickRayNodes = [];
+
         // ── Source-engine constants ───────────────────────────────────────────
 
         // Eye height offsets in Source units (ref: addendum spec)
@@ -304,6 +310,68 @@ namespace GUI.Types.GLViewers
             Input.Camera.SetLocationPitchYaw(eyePos, pitchRad, yawRad);
         }
 
+        // Colour for the ray-trace hit marker
+        private static readonly Color32 RayHitColor   = new(255, 80, 80, 240); // red   – blocked
+        private static readonly Color32 RayClearColor = new(80, 255, 80, 240); // green – clear
+
+        /// <summary>
+        /// Fired when a player capsule is clicked. Traces a ray from that player's eye
+        /// to every other player's eye and draws colour-coded lines in the scene.
+        /// Green = clear, Red = blocked (line ends at first hit).
+        /// </summary>
+        private void TraceRaysFromPlayer(ulong sourceSteamId)
+        {
+            // Remove previous click-ray lines
+            foreach (var n in clickRayNodes)
+                Scene.Remove(n, false);
+
+            clickRayNodes.Clear();
+
+            var stateMap = GetStateForTick(currentTick);
+            if (stateMap == null || !stateMap.TryGetValue(sourceSteamId, out var srcState))
+                return;
+
+            var physics = Scene.PhysicsWorld;
+            if (physics == null)
+                return;
+
+            var srcEye = EyePosition(srcState);
+
+            foreach (var (targetId, tgtState) in stateMap)
+            {
+                if (targetId == sourceSteamId)
+                    continue;
+
+                var tgtEye = EyePosition(tgtState);
+                var trace = physics.TraceRay(srcEye, tgtEye);
+
+                Color32 startColor, endColor;
+                Vector3 lineEnd;
+
+                if (trace.Hit)
+                {
+                    startColor = RayHitColor;
+                    endColor   = RayHitColor with { A = 40 };
+                    lineEnd    = trace.HitPosition;
+                }
+                else
+                {
+                    startColor = RayClearColor;
+                    endColor   = RayClearColor with { A = 40 };
+                    lineEnd    = tgtEye;
+                }
+
+                var line = new LineSceneNode(Scene, srcEye, lineEnd, startColor, endColor)
+                {
+                    LayerName = "RTS Visibility",
+                };
+
+                line.SetInfiniteBounds();
+                Scene.Add(line, false);
+                clickRayNodes.Add(line);
+            }
+        }
+
         private string TickLabelText() =>
             tickMax > tickMin
                 ? $"Tick: {currentTick}  ({tickMin} – {tickMax})"
@@ -410,6 +478,11 @@ namespace GUI.Types.GLViewers
 
             overlayNodes.Clear();
 
+            foreach (var node in clickRayNodes)
+                Scene.Remove(node, false);
+
+            clickRayNodes.Clear();
+
             var stateMap = GetStateForTick(currentTick);
             var activeSpans = ActiveSpansAt(currentTick).ToList();
 
@@ -422,6 +495,7 @@ namespace GUI.Types.GLViewers
             }
 
             // ── Player capsules + view rays ──────────────────────────────
+            capsuleSteamIds.Clear();
             if (stateMap != null)
             {
                 foreach (var (steamId, state) in stateMap)
@@ -446,6 +520,7 @@ namespace GUI.Types.GLViewers
 
                         Scene.Add(capsule, false);
                         overlayNodes.Add(capsule);
+                        capsuleSteamIds[capsule] = steamId;
                     }
 
                     if (showViewRays)
@@ -521,9 +596,17 @@ namespace GUI.Types.GLViewers
 
         // ── Required abstract overrides ──────────────────────────────────────
 
-        protected override void OnPicked(object? sender, PickingResponse pixelInfo)
+        protected override void OnPicked(object? sender, PickingResponse pickingResponse)
         {
-            // No picking interaction for this viewer
+            var pixelInfo = pickingResponse.PixelInfo;
+            if (pixelInfo.ObjectId == 0)
+                return;
+
+            var node = Scene.Find(pixelInfo.ObjectId);
+            if (node == null || !capsuleSteamIds.TryGetValue(node, out var steamId))
+                return;
+
+            TraceRaysFromPlayer(steamId);
         }
 
         public override void Dispose()
@@ -535,6 +618,8 @@ namespace GUI.Types.GLViewers
             spanCountLabel = null;
             tickScrubber?.Dispose();
             tickScrubber = null;
+            clickRayNodes.Clear();
+            capsuleSteamIds.Clear();
         }
     }
 }
