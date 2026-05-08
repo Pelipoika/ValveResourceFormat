@@ -8,7 +8,6 @@ using GUI.Forms;
 using GUI.Types.GLViewers;
 using GUI.Utils;
 using SteamDatabase.ValvePak;
-using ValveResourceFormat.IO;
 using ValveResourceFormat.Renderer;
 
 namespace GUI.Types.Viewers
@@ -28,12 +27,8 @@ namespace GUI.Types.Viewers
         {
             var name = Path.GetFileName(fileName);
 
-            // {uuid}-result.bin  — RT_ServerResponse
-            if (name.EndsWith("-result.bin", StringComparison.OrdinalIgnoreCase) ||
-                name.EndsWith("_result.bin", StringComparison.OrdinalIgnoreCase))
-            {
+            if (IsResultFileName(name) || IsRequestFileName(name))
                 return true;
-            }
 
             // {uuid}.bin  — RT_ServerRequest  (UUID pattern: 8-4-4-4-12 hex digits)
             if (name.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) &&
@@ -48,10 +43,20 @@ namespace GUI.Types.Viewers
                    || name.Contains("rt_response", StringComparison.OrdinalIgnoreCase);
         }
 
+        // {uuid}-result.bin / {uuid}_result.bin / {uuid}_output.bin  — RT_ServerResponse
+        private static bool IsResultFileName(string name) =>
+            name.EndsWith("-result.bin", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith("_result.bin", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith("_output.bin", StringComparison.OrdinalIgnoreCase);
+
+        // {uuid}_input.bin  — RT_ServerRequest
+        private static bool IsRequestFileName(string name) =>
+            name.EndsWith("_input.bin", StringComparison.OrdinalIgnoreCase);
+
         // Matches names that start with a UUID segment (8 hex chars followed by a dash)
         private static bool IsUuidBasedName(string stem) =>
             stem.Length >= 8 &&
-            stem[..8].All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+            stem[..8].All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
 
         // ── loading ───────────────────────────────────────────────────────────
 
@@ -70,8 +75,7 @@ namespace GUI.Types.Viewers
             }
 
             var fileName = Path.GetFileName(vrfGuiContext.FileName ?? string.Empty);
-            var isResult = fileName.EndsWith("-result.bin",    StringComparison.OrdinalIgnoreCase)
-                           || fileName.EndsWith("_result.bin", StringComparison.OrdinalIgnoreCase);
+            var isResult = IsResultFileName(fileName);
 
             if (isResult)
             {
@@ -147,30 +151,51 @@ namespace GUI.Types.Viewers
 
         // ── sibling file helpers ──────────────────────────────────────────────
 
-        /// <summary>Given {uuid}-result.bin, returns {uuid}.bin in the same directory.</summary>
+        /// <summary>Given a result file, returns the path of the sibling request file in the same directory.</summary>
         private static string? GetSiblingRequestPath(string resultPath)
         {
-            var dir = Path.GetDirectoryName(resultPath);
+            var dir = Path.GetDirectoryName(resultPath) ?? string.Empty;
             var name = Path.GetFileName(resultPath);
 
-            // Strip "-result" or "_result" suffix before the .bin extension
-            string stem;
-            if (name.EndsWith("-result.bin", StringComparison.OrdinalIgnoreCase))
-                stem = name[..^"-result.bin".Length];
-            else if (name.EndsWith("_result.bin", StringComparison.OrdinalIgnoreCase))
-                stem = name[..^"_result.bin".Length];
-            else
-                return null;
+            if (name.EndsWith("_output.bin", StringComparison.OrdinalIgnoreCase))
+            {
+                // {stem}_output.bin  →  {stem}_input.bin
+                var stem = name[..^"_output.bin".Length];
+                var inputPath = Path.Combine(dir, stem + "_input.bin");
+                return File.Exists(inputPath) ? inputPath : null;
+            }
 
-            return Path.Combine(dir ?? string.Empty, stem + ".bin");
+            if (name.EndsWith("-result.bin", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(dir, name[..^"-result.bin".Length] + ".bin");
+
+            if (name.EndsWith("_result.bin", StringComparison.OrdinalIgnoreCase))
+                return Path.Combine(dir, name[..^"_result.bin".Length] + ".bin");
+
+            return null;
         }
 
-        /// <summary>Given {uuid}.bin, returns {uuid}-result.bin in the same directory.</summary>
+        /// <summary>Given a request file, returns the first existing sibling result/output file, or a default path.</summary>
         private static string? GetSiblingResultPath(string requestPath)
         {
-            var dir = Path.GetDirectoryName(requestPath);
-            var stem = Path.GetFileNameWithoutExtension(requestPath);
-            return Path.Combine(dir ?? string.Empty, stem + "-result.bin");
+            var dir = Path.GetDirectoryName(requestPath) ?? string.Empty;
+            var name = Path.GetFileName(requestPath);
+
+            // {stem}_input.bin  →  {stem}_output.bin
+            if (name.EndsWith("_input.bin", StringComparison.OrdinalIgnoreCase))
+            {
+                var stem = name[..^"_input.bin".Length];
+                return FirstExistingPath(dir, stem, "_output.bin", "_result.bin", "-result.bin");
+            }
+
+            var baseStem = Path.GetFileNameWithoutExtension(requestPath);
+            return FirstExistingPath(dir, baseStem, "-result.bin", "_result.bin", "_output.bin");
+        }
+
+        /// <summary>Returns the first path that exists on disk, or the first candidate if none exist.</summary>
+        private static string FirstExistingPath(string dir, string stem, params string[] suffixes)
+        {
+            var paths = suffixes.Select(s => Path.Combine(dir, stem + s)).ToArray();
+            return paths.FirstOrDefault(File.Exists) ?? paths[0];
         }
 
         // ── tab creation ──────────────────────────────────────────────────────
