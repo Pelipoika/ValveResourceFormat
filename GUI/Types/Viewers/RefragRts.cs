@@ -383,7 +383,7 @@ namespace GUI.Types.Viewers
                     var spawnTick = (int)tick.Id;
                     var destroyTick = spawnTick + SmokeDurationTicks;
                     var pos = new Vector3(smokeEvent.Position.X, smokeEvent.Position.Y, smokeEvent.Position.Z);
-                    result.Add(new GLRtsViewer.RTSSmoke(pos, destroyTick));
+                    result.Add(new GLRtsViewer.RTSSmoke(pos, spawnTick, destroyTick));
                 }
             }
 

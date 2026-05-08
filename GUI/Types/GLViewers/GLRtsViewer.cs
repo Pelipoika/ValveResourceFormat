@@ -20,8 +20,8 @@ namespace GUI.Types.GLViewers
 
         public sealed record PlayerInfo(ulong SteamId, uint Team);
 
-        /// <summary>An active smoke grenade instance. Active from spawn until DestroyTick (exclusive).</summary>
-        public sealed record RTSSmoke(Vector3 Position, int DestroyTick);
+        /// <summary>An active smoke grenade instance. Active from SpawnTick until DestroyTick (exclusive).</summary>
+        public sealed record RTSSmoke(Vector3 Position, int SpawnTick, int DestroyTick);
 
         /// <summary>Per-player state at a single tick.</summary>
         public sealed record PlayerTickState(
@@ -441,7 +441,7 @@ namespace GUI.Types.GLViewers
             var result = new Dictionary<int, IReadOnlyList<RTSSmoke>>(sortedTickIds.Count);
             foreach (var tickId in sortedTickIds)
             {
-                var active = allSmokes.Where(s => tickId < s.DestroyTick).ToList();
+                var active = allSmokes.Where(s => tickId >= s.SpawnTick && tickId < s.DestroyTick).ToList();
                 if (active.Count > 0)
                     result[tickId] = active;
             }
