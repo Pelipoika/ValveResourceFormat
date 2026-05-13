@@ -141,9 +141,10 @@ namespace GUI.Types.Viewers
                     var players = BuildPlayers();
                     var ticks = BuildTicks();
                     var smokes = BuildSmokes();
+                    var doorEvents = BuildDoorEvents();
 
                     rendererContext = mapContext.CreateRendererContext();
-                    glViewer        = new GLRtsViewer(mapContext, rendererContext, mapName, spans, players, ticks, smokes);
+                    glViewer        = new GLRtsViewer(mapContext, rendererContext, mapName, spans, players, ticks, smokes, doorEvents);
                     glViewer.InitializeLoad();
                     rendererContext = null;
                 }
@@ -388,6 +389,15 @@ namespace GUI.Types.Viewers
             }
 
             return result;
+        }
+
+        private List<GLRtsViewer.RTSDoorEvent> BuildDoorEvents()
+        {
+            var doorEvents = request?.RayTraceRequest?.DoorEvents ?? [];
+            return doorEvents
+                .Select(e => new GLRtsViewer.RTSDoorEvent(e.Tick, e.X, e.Y, e.Z, e.AngX, e.AngY, e.EventName))
+                .OrderBy(e => e.Tick)
+                .ToList();
         }
 
         // ── text tabs ─────────────────────────────────────────────────────────

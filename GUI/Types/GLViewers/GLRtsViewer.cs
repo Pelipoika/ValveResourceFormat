@@ -4,10 +4,14 @@ using System.Linq;
 using System.Windows.Forms;
 using GUI.Controls;
 using GUI.Utils;
+using ValveResourceFormat.IO;
 using ValveResourceFormat.Renderer;
 using ValveResourceFormat.Renderer.SceneNodes;
 using ValveResourceFormat.Renderer.Utils;
 using ValveResourceFormat.Renderer.World;
+using ValveResourceFormat.ResourceTypes;
+using ValveResourceFormat.Serialization.KeyValues;
+using ValveResourceFormat.Utils;
 using static ValveResourceFormat.Renderer.PickingTexture;
 
 namespace GUI.Types.GLViewers
@@ -22,6 +26,9 @@ namespace GUI.Types.GLViewers
 
         /// <summary>An active smoke grenade instance. Active from SpawnTick until DestroyTick (exclusive).</summary>
         public sealed record RTSSmoke(Vector3 Position, int SpawnTick, int DestroyTick);
+
+        /// <summary>A door or breakable state-change event from the RTS proto.</summary>
+        public sealed record RTSDoorEvent(int Tick, float X, float Y, float Z, float AngX, float AngY, string EventName);
 
         /// <summary>Per-player state at a single tick.</summary>
         public sealed record PlayerTickState(
@@ -41,6 +48,9 @@ namespace GUI.Types.GLViewers
         // tickId → list of smokes active at that tick (pre-filtered at build time)
         private readonly Dictionary<int, IReadOnlyList<RTSSmoke>> smokesByTick;
 
+        // Door/breakable events sorted by tick (fed from proto door_events)
+        private readonly IReadOnlyList<RTSDoorEvent> _doorEvents;
+
         private readonly string             mapName;
         private readonly int                tickMin;
         private readonly int                tickMax;
@@ -53,9 +63,13 @@ namespace GUI.Types.GLViewers
         private          bool showPlayers  = true;
         private          bool showViewRays;
         private          bool showSmokes = true;
+        private          bool _showDoors = true;
         private volatile bool overlayDirty;
 
         private readonly List<SceneNode> overlayNodes = [];
+
+        // Loaded door/breakable entities — permanent scene nodes repositioned per tick
+        private readonly List<DoorEntity> _doorEntities = [];
 
         private Label?                 tickLabel;
         private Label?                 spanCountLabel;
@@ -102,13 +116,15 @@ namespace GUI.Types.GLViewers
             IReadOnlyList<VisSpan>                                        spans,
             IReadOnlyDictionary<ulong, PlayerInfo>?                       players    = null,
             IReadOnlyDictionary<int, Dictionary<ulong, PlayerTickState>>? ticks      = null,
-            IReadOnlyList<RTSSmoke>?                                      smokesList = null)
+            IReadOnlyList<RTSSmoke>?                                      smokesList = null,
+            IReadOnlyList<RTSDoorEvent>?                                  doorEvents = null)
             : base(vrfGuiContext, rendererContext)
         {
             this.mapName = mapName;
             this.spans   = spans;
-            this.players = players ?? new Dictionary<ulong, PlayerInfo>();
-            this.ticks   = ticks   ?? new Dictionary<int, Dictionary<ulong, PlayerTickState>>();
+            this.players = players    ?? new Dictionary<ulong, PlayerInfo>();
+            this.ticks   = ticks      ?? new Dictionary<int, Dictionary<ulong, PlayerTickState>>();
+            _doorEvents  = doorEvents ?? [];
 
             // Build sorted tick id list from whichever source has data
             var tickIds = this.ticks.Count > 0
@@ -151,8 +167,10 @@ namespace GUI.Types.GLViewers
                 var worldResource = renderContext.FileLoader.LoadFileCompiled(worldPath)
                                     ?? throw new FileNotFoundException($"Failed to load world file '{worldPath}'.");
 
-                var loader = new WorldLoader((ValveResourceFormat.ResourceTypes.World)worldResource.DataBlock!, Scene);
+                var world = (World)worldResource.DataBlock!;
+                var loader = new WorldLoader(world, Scene);
                 loader.Load(mapResource.ExternalReferences, skipVisibility: true, skipEntities: true);
+                LoadDoorEntities(world, renderContext.FileLoader);
             }
             catch (Exception ex)
             {
@@ -217,6 +235,16 @@ namespace GUI.Types.GLViewers
                                       }
                                      );
 
+                UiControl.AddCheckBox(
+                                      "Doors & Breakables",
+                                      _showDoors,
+                                      v =>
+                                      {
+                                          _showDoors   = v;
+                                          overlayDirty = true;
+                                      }
+                                     );
+
                 tickLabel = new Label { Text = TickLabelText(), AutoSize = true, Padding = new Padding(4, 4, 4, 0) };
                 UiControl.AddControl(tickLabel);
 
@@ -242,30 +270,29 @@ namespace GUI.Types.GLViewers
 
                     var jumpInput = RendererControl.CreateFloatInput(
                                                                      "Jump to Tick",
-                                                                     v =>
-                                                                     {
-                                                                         var tick = Math.Clamp((int)v, tickMin, tickMax);
-                                                                         currentTick  = tick;
-                                                                         overlayDirty = true;
-                                                                         var sliderVal = (tickMax > tickMin)
-                                                                             ? (float)(tick - tickMin) / (tickMax - tickMin)
-                                                                             : 0f;
-
-                                                                         GLControl?.BeginInvoke(() =>
-                                                                                                {
-                                                                                                    tickScrubber?.Slider.Value = sliderVal;
-
-                                                                                                    tickLabel?.Text      = TickLabelText();
-                                                                                                    spanCountLabel?.Text = SpanCountText();
-                                                                                                }
-                                                                                               );
-                                                                     },
+                                                                     v => NavigateToTick(Math.Clamp((int)v, tickMin, tickMax)),
                                                                      startValue: tickMin,
                                                                      minValue: tickMin,
                                                                      maxValue: tickMax
                                                                     );
 
                     UiControl.AddControl(jumpInput);
+
+                    var prevButton = new ThemedButton { Text = "◀ Prev Tick", AutoSize = true };
+                    var nextButton = new ThemedButton { Text = "Next Tick ▶", AutoSize = true };
+                    prevButton.Click += (_, _) => StepTick(-1);
+                    nextButton.Click += (_, _) => StepTick(+1);
+
+                    var buttonPanel = new FlowLayoutPanel
+                    {
+                        AutoSize      = true,
+                        FlowDirection = FlowDirection.LeftToRight,
+                        WrapContents  = false,
+                    };
+
+                    buttonPanel.Controls.Add(prevButton);
+                    buttonPanel.Controls.Add(nextButton);
+                    UiControl.AddControl(buttonPanel);
                 }
             }
 
@@ -419,6 +446,45 @@ namespace GUI.Types.GLViewers
         {
             var active = ActiveSpansAt(currentTick).Count();
             return $"Vis spans: {active} / {spans.Count}";
+        }
+
+        private void NavigateToTick(int tick)
+        {
+            currentTick  = tick;
+            overlayDirty = true;
+            var sliderVal = (tickMax > tickMin)
+                ? (float)(tick - tickMin) / (tickMax - tickMin)
+                : 0f;
+
+            GLControl?.BeginInvoke(() =>
+                                   {
+                                       tickScrubber?.Slider.Value = sliderVal;
+                                       tickLabel?.Text            = TickLabelText();
+                                       spanCountLabel?.Text       = SpanCountText();
+                                   }
+                                  );
+        }
+
+        private void StepTick(int direction)
+        {
+            if (sortedTickIds.Count == 0)
+                return;
+
+            // Find index of the last tick <= currentTick
+            var idx = 0;
+            for (var i = 0; i < sortedTickIds.Count; i++)
+            {
+                if (sortedTickIds[i] <= currentTick)
+                    idx = i;
+                else
+                    break;
+            }
+
+            // When on an exact tick, both directions must step away from it
+            if (sortedTickIds[idx] == currentTick)
+                idx += direction;
+
+            NavigateToTick(sortedTickIds[Math.Clamp(idx, 0, sortedTickIds.Count - 1)]);
         }
 
         // ── Overlay geometry ─────────────────────────────────────────────────
@@ -663,9 +729,149 @@ namespace GUI.Types.GLViewers
                     overlayNodes.Add(sphere);
                 }
             }
+
+            // ── Doors and breakables ──────────────────────────────────────
+            UpdateDoorTransforms();
         }
 
         // ── Frame update
+
+        private sealed class DoorEntity
+        {
+            public required Vector3         Origin     { get; init; }
+            public required Vector3         BaseAngles { get; init; }
+            public required PhysSceneNode[] Nodes      { get; init; }
+        }
+
+        private void LoadDoorEntities(World world, GameFileLoader fileLoader)
+        {
+            foreach (var lumpName in world.GetEntityLumpNames())
+            {
+                var lumpResource = fileLoader.LoadFileCompiled(lumpName);
+                if (lumpResource?.DataBlock is not EntityLump entityLump)
+                    continue;
+
+                CollectDoorEntitiesFromLump(entityLump, fileLoader);
+            }
+        }
+
+        private void CollectDoorEntitiesFromLump(EntityLump entityLump, GameFileLoader fileLoader)
+        {
+            foreach (var childName in entityLump.GetChildEntityNames())
+            {
+                var childResource = fileLoader.LoadFileCompiled(childName);
+                if (childResource?.DataBlock is not EntityLump childLump)
+                    continue;
+
+                CollectDoorEntitiesFromLump(childLump, fileLoader);
+            }
+
+            foreach (var entity in entityLump.GetEntities())
+            {
+                var classname = entity.GetStringProperty("classname");
+                if (classname is not ("prop_door_rotating" or "func_breakable"))
+                    continue;
+
+                var modelPath = entity.GetStringProperty("model");
+                if (string.IsNullOrEmpty(modelPath))
+                    continue;
+
+                var modelResource = fileLoader.LoadFileCompiled(modelPath);
+                if (modelResource?.DataBlock is not Model model)
+                    continue;
+
+                PhysAggregateData? phys = model.GetEmbeddedPhys();
+                if (phys == null)
+                {
+                    var refPhysName = model.GetReferencedPhysNames().FirstOrDefault();
+                    if (refPhysName != null)
+                        phys = fileLoader.LoadFileCompiled(refPhysName)?.DataBlock as PhysAggregateData;
+                }
+
+                if (phys == null || phys.Parts.Length == 0)
+                    continue;
+
+                var origin = entity.GetVector3Property("origin");
+                var angles = entity.GetVector3Property("angles");
+
+                var nodes = PhysSceneNode.CreatePhysSceneNodes(Scene, phys, modelPath, classname).ToArray();
+                if (nodes.Length == 0)
+                    continue;
+
+                var transform = CreateDoorTransform(origin, angles);
+                foreach (var node in nodes)
+                {
+                    node.Transform = transform;
+                    node.LayerName = "RTS Doors";
+                    Scene.Add(node, false);
+                }
+
+                _doorEntities.Add(new DoorEntity { Origin = origin, BaseAngles = angles, Nodes = nodes });
+            }
+        }
+
+        private static Matrix4x4 CreateDoorTransform(Vector3 origin, Vector3 pitchYawRoll)
+        {
+            var rotation = EntityTransformHelper.CreateRotationMatrixFromEulerAngles(pitchYawRoll);
+            return rotation * Matrix4x4.CreateTranslation(origin);
+        }
+
+        private void UpdateDoorTransforms()
+        {
+            if (_doorEntities.Count == 0)
+                return;
+
+            var currentAngles = new Vector3[_doorEntities.Count];
+            var deleted = new bool[_doorEntities.Count];
+
+            for (var i = 0; i < _doorEntities.Count; i++)
+                currentAngles[i] = _doorEntities[i].BaseAngles;
+
+            // Replay events up to currentTick — events are sorted ascending by tick
+            foreach (var ev in _doorEvents)
+            {
+                if (ev.Tick > currentTick)
+                    break;
+
+                var idx = FindClosestDoorEntity(new Vector3(ev.X, ev.Y, ev.Z));
+                if (idx < 0)
+                    continue;
+
+                if (ev.EventName == "moved")
+                    currentAngles[idx] = new Vector3(ev.AngX, ev.AngY, 0f);
+                else if (ev.EventName is "damaged" or "deleted")
+                    deleted[idx] = true;
+            }
+
+            for (var i = 0; i < _doorEntities.Count; i++)
+            {
+                var visible = _showDoors && !deleted[i];
+                var transform = CreateDoorTransform(_doorEntities[i].Origin, currentAngles[i]);
+                foreach (var node in _doorEntities[i].Nodes)
+                {
+                    node.Transform = transform;
+                    node.Enabled   = visible;
+                }
+            }
+        }
+
+        private int FindClosestDoorEntity(Vector3 position)
+        {
+            const float Tolerance = 100f;
+            var best = -1;
+            var bestDist = float.MaxValue;
+            for (var i = 0; i < _doorEntities.Count; i++)
+            {
+                var dist = Vector3.Distance(_doorEntities[i].Origin, position);
+                if (dist < Tolerance && dist < bestDist)
+                {
+                    bestDist = dist;
+                    best     = i;
+                }
+            }
+
+            return best;
+        }
 
         protected override void OnUpdate(float frameTime)
         {
