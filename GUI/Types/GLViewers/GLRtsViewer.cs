@@ -6,6 +6,7 @@ using GUI.Controls;
 using GUI.Utils;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.Renderer;
+using ValveResourceFormat.Renderer.Input;
 using ValveResourceFormat.Renderer.SceneNodes;
 using ValveResourceFormat.Renderer.Utils;
 using ValveResourceFormat.Renderer.World;
@@ -873,9 +874,26 @@ namespace GUI.Types.GLViewers
             return best;
         }
 
+        private float _playbackAccumulator;
+
         protected override void OnUpdate(float frameTime)
         {
             base.OnUpdate(frameTime);
+
+            if ((CurrentlyPressedKeys & TrackedKeys.Space) != 0)
+            {
+                _playbackAccumulator += frameTime;
+                const float TickInterval = 1f / 64f;
+                while (_playbackAccumulator >= TickInterval)
+                {
+                    _playbackAccumulator -= TickInterval;
+                    StepTick(+1);
+                }
+            }
+            else
+            {
+                _playbackAccumulator = 0f;
+            }
 
             if (overlayDirty)
             {
