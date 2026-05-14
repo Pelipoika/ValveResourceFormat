@@ -21,7 +21,8 @@ public class PlayerMovement
     private const float StopSpeedValue = 80f;             // sv_stopspeed
     private const float AccelerateValue = 5.5f;           // sv_accelerate
     private const float AirAccelerateValue = 12f;         // sv_airaccelerate
-    private const float MaxSpeedValue = 320f;             // sv_maxspeed
+    //While sv_maxspeed is 320 in GO, the actual max speed is set by CS_PLAYER_SPEED_RUN, which is 260.
+    private const float MaxSpeedValue = 260f;             // sv_maxspeed
     private const float JumpImpulseValue = 301.993377f;   // sv_jump_impulse = sqrt(2*800*57)
     private const float MaxVelocityValue = 3500f;         // sv_maxvelocity
 
@@ -45,10 +46,33 @@ public class PlayerMovement
     // Movement state
     /// <summary>Gets the current player velocity in world units per second.</summary>
     public Vector3 Velocity { get; private set; }
-    private Vector3 AABBCenteredPosition;
-    private bool OnGround;
-    private bool WasOnGroundLastFrame;
+    private Vector3 TracePositionPrevious;
+    private Vector3 TracePosition;
+    private Vector3 TracePositionSmooth;
+    private float AccumulatedTime;
+
+    /// <summary>
+    /// The desired update rate.
+    /// </summary>
+    public int TickRate { get; set; } = 64;
+
+    /// <summary>
+    /// Gets the current player position at feet level (where the AABB touches the ground).
+    /// </summary>
+    public Vector3 Position => TracePositionSmooth - new Vector3(0, 0, Hull.Size.Z / 2); // Convert from AABB center to feet position
+
+    /// <summary>
+    /// Gets a value indicating whether the player is currently on the ground.
+    /// </summary>
+    public bool OnGround { get; private set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the player was touching the ground in the previous frame.
+    /// </summary>
+    public bool WasOnGroundLastFrame { get; private set; }
     private bool WasDuckingLastFrame;
+
+    private bool RequestedJump;
 
     private bool HoldingCtrl => Input.Holding(TrackedKeys.Control);
     private bool HoldingShift => Input.Holding(TrackedKeys.Shift);
@@ -56,7 +80,20 @@ public class PlayerMovement
     private UserInput Input { get; }
     private Rubikon? Physics => Input.PhysicsWorld;
 
-    private float CrouchBlend; // 0 = standing, 1 = fully ducked
+    /// <summary>
+    /// Linear value from 0 to 1 representing how much the player is crouched.  0 = standing, 1 = fully crouched.
+    /// </summary>
+    public float CrouchBlend { get; private set; }
+
+    /// <summary>
+    /// Gets the current eye height blended between standing and crouched positions.
+    /// </summary>
+    public float BlendedEyeHeight { get; private set; }
+
+
+    /// <summary>The current eye position</summary>
+    public Vector3 EyePosition { get; private set; }
+
     private float DuckSpeedModifierSmooth => float.Lerp(1f, DuckSpeedModifier, CrouchBlend);
     private AABB SnappedHull => HoldingCtrl ? PlayerHullDucked : PlayerHullStanding;
 
@@ -101,7 +138,8 @@ public class PlayerMovement
     /// </summary>
     public void ResetPosition(Camera camera)
     {
-        AABBCenteredPosition = camera.Location - Vector3.UnitZ * ViewHeightStanding + new Vector3(0, 0, PlayerHullStanding.Size.Z / 2);
+        TracePosition = camera.Location - Vector3.UnitZ * ViewHeightStanding + new Vector3(0, 0, PlayerHullStanding.Size.Z / 2);
+        TracePositionPrevious = TracePosition;
         Velocity = Vector3.Zero;
     }
 
@@ -115,116 +153,135 @@ public class PlayerMovement
         if (Initialize)
         {
             ResetPosition(camera);
-            TryUnstuck(ref AABBCenteredPosition, SnappedHull);
+            TryUnstuck(ref TracePosition, SnappedHull);
             Velocity = input.Velocity;
             Initialize = false;
         }
 
-        var position = AABBCenteredPosition;
+        RequestedJump = RequestedJump || input.Pressed(TrackedKeys.Space) || input.Holding(TrackedKeys.MouseWheelDown) || input.Holding(TrackedKeys.MouseWheelUp);
+
+        var position = TracePosition;
+
         var pitch = camera.Pitch;
         var yaw = camera.Yaw;
 
-        // Track input state for acceleration modifiers and collision hull
-        var isDucking = HoldingCtrl;
-        var isWalking = !HoldingCtrl && HoldingShift;
+        AccumulatedTime += deltaTime;
+        deltaTime = 1f / TickRate;
 
-        BlendDuckedHull(deltaTime, ref position, isDucking);
-
+        int ticks = 0;
         var playerHull = Hull;
-
-        WasDuckingLastFrame = isDucking;
-        WasOnGroundLastFrame = OnGround;
-
-        // Categorize position (check if on ground) - use lerped hull for collision
-        CategorizePosition(ref position, playerHull);
-
-        // Check if we just landed this frame
-        var justLanded = !WasOnGroundLastFrame && OnGround;
-
-        // StartGravity - add gravity at start of frame (like Source does)
-        if (!OnGround)
+        for (; ticks + 1 < AccumulatedTime * TickRate; ticks++)
         {
-            Velocity = new Vector3(Velocity.X, Velocity.Y, Velocity.Z - GravityValue * deltaTime * 0.5f);
-            CheckVelocity(ref position); // StartGravity calls CheckVelocity in Source
-        }
+            // Track input state for acceleration modifiers and collision hull
+            var isDucking = HoldingCtrl;
+            var isWalking = !HoldingCtrl && HoldingShift;
 
-        // Check for jump (auto bunny hop if enabled and holding jump)
-        var wantsToJump = AutoBunnyHop ? input.Holding(TrackedKeys.Space) : input.Pressed(TrackedKeys.Space);
-        wantsToJump = wantsToJump || input.Holding(TrackedKeys.MouseWheelDown) || input.Holding(TrackedKeys.MouseWheelUp);
+            BlendDuckedHull(deltaTime, ref position, isDucking);
 
-        // For auto bhop, also jump immediately when landing while holding jump
-        if (wantsToJump && (OnGround || (AutoBunnyHop && justLanded)))
-        {
-            // Prevent bunnyhopping - cap speed before jumping (only if auto bhop is disabled)
-            if (!AutoBunnyHop)
+            playerHull = Hull;
+
+            WasDuckingLastFrame = isDucking;
+            WasOnGroundLastFrame = OnGround;
+
+            // Categorize position (check if on ground) - use lerped hull for collision
+            CategorizePosition(ref position, playerHull);
+
+            // Check if we just landed this frame
+            var justLanded = !WasOnGroundLastFrame && OnGround;
+
+            // StartGravity - add gravity at start of frame (like Source does)
+            if (!OnGround)
             {
-                PreventBunnyJumping();
+                Velocity = new Vector3(Velocity.X, Velocity.Y, Velocity.Z - GravityValue * deltaTime * 0.5f);
+                CheckVelocity(ref position); // StartGravity calls CheckVelocity in Source
             }
-            CheckJump(deltaTime);
-        }
 
-        // Calculate wish velocity from input (with speed modifiers for duck/crouch)
-        var (wishdir, wishspeed) = CalculateWishVelocity(input, pitch, yaw);
+            // Check for jump (auto bunny hop if enabled and holding jump)
+            var wantsToJump = AutoBunnyHop ? input.Holding(TrackedKeys.Space) : false;
+            wantsToJump = wantsToJump || RequestedJump;
 
-        // Apply walk speed modifier only when near walk speed (CS:GO behavior)
-        // This allows natural deceleration instead of instant capping
-        if (isWalking)
-        {
-            var currentSpeed = Velocity.Length();
-            var walkSpeed = MaxSpeedValue * WalkSpeedModifier;
-            if (currentSpeed < walkSpeed + 25.0f)
+            // For auto bhop, also jump immediately when landing while holding jump
+            if (wantsToJump && (OnGround || (AutoBunnyHop && justLanded)))
             {
-                wishspeed = MathF.Min(wishspeed, walkSpeed);
+                // Prevent bunnyhopping - cap speed before jumping (only if auto bhop is disabled)
+                if (!AutoBunnyHop)
+                {
+                    PreventBunnyJumping();
+                }
+                CheckJump(deltaTime);
             }
-        }
 
-        // Ground or air movement - use isDucking (input) for speed modifiers
-        if (OnGround)
-        {
-            // Apply friction before movement
-            Velocity = new Vector3(Velocity.X, Velocity.Y, 0);
-            Friction(deltaTime);
+            // Calculate wish velocity from input (with speed modifiers for duck/crouch)
+            var (wishdir, wishspeed) = CalculateWishVelocity(input, pitch, yaw);
+
+            // Apply walk speed modifier only when near walk speed (CS:GO behavior)
+            // This allows natural deceleration instead of instant capping
+            if (isWalking)
+            {
+                var currentSpeed = Velocity.Length();
+                var walkSpeed = MaxSpeedValue * WalkSpeedModifier;
+                if (currentSpeed < walkSpeed + 25.0f)
+                {
+                    wishspeed = MathF.Min(wishspeed, walkSpeed);
+                }
+            }
+
+            // Ground or air movement - use isDucking (input) for speed modifiers
+            if (OnGround)
+            {
+                // Apply friction before movement
+                Velocity = new Vector3(Velocity.X, Velocity.Y, 0);
+                Friction(deltaTime);
+                CheckVelocity(ref position);
+                WalkMove(wishdir, wishspeed, deltaTime, isDucking, isWalking);
+                CheckVelocity(ref position);
+            }
+            else
+            {
+                AirMove(wishdir, wishspeed, deltaTime);
+            }
+
+            // Check velocity for NaN/bounds
             CheckVelocity(ref position);
-            WalkMove(wishdir, wishspeed, deltaTime, isDucking, isWalking);
+
+            // Update position based on velocity - use lerped hull for collision
+            position = TryPlayerMove(position, Velocity * deltaTime, playerHull);
+
+            // StayOnGround - keep player stuck to ground when going down slopes/stairs
+            if (OnGround)
+            {
+                StayOnGround(ref position, playerHull);
+            }
+
+            // Recategorize position after movement (now that position is updated)
+            CategorizePosition(ref position, playerHull);
+
+            // Check velocity again for NaN/bounds
             CheckVelocity(ref position);
+
+            // FinishGravity - add remaining gravity at end of frame
+            if (!OnGround)
+            {
+                Velocity = new Vector3(Velocity.X, Velocity.Y, Velocity.Z - GravityValue * deltaTime * 0.5f);
+                CheckVelocity(ref position); // FinishGravity calls CheckVelocity in Source
+            }
+            // Store the updated position and make SourcePosition the previous DestinationPosition
+            TracePositionPrevious = TracePosition;
+            TracePosition = position;
         }
-        else
-        {
-            AirMove(wishdir, wishspeed, deltaTime);
-        }
+        //Clear buffered jumps
+        if(ticks != 0)
+            RequestedJump = false;
 
-        // Check velocity for NaN/bounds
-        CheckVelocity(ref position);
+        AccumulatedTime -= (float)ticks / TickRate;
 
-        // Update position based on velocity - use lerped hull for collision
-        position = TryPlayerMove(position, Velocity * deltaTime, playerHull);
-
-        // StayOnGround - keep player stuck to ground when going down slopes/stairs
-        if (OnGround)
-        {
-            StayOnGround(ref position, playerHull);
-        }
-
-        // Recategorize position after movement (now that position is updated)
-        CategorizePosition(ref position, playerHull);
-
-        // Check velocity again for NaN/bounds
-        CheckVelocity(ref position);
-
-        // FinishGravity - add remaining gravity at end of frame
-        if (!OnGround)
-        {
-            Velocity = new Vector3(Velocity.X, Velocity.Y, Velocity.Z - GravityValue * deltaTime * 0.5f);
-            CheckVelocity(ref position); // FinishGravity calls CheckVelocity in Source
-        }
-
-        // Store the updated position
-        AABBCenteredPosition = position;
+        //Get interpolated position
+        TracePositionSmooth = TracePositionPrevious + (TracePosition - TracePositionPrevious) * AccumulatedTime * TickRate;
 
         // Set camera at eye height with smooth crouch blend
-        var blendedEyeHeight = ViewHeightStanding + (ViewHeightDucked - ViewHeightStanding) * CrouchBlend;
-        var groundPos = AABBCenteredPosition - new Vector3(0, 0, playerHull.Size.Z / 2);
-        camera.Location = groundPos + Vector3.UnitZ * blendedEyeHeight;
+        BlendedEyeHeight = ViewHeightStanding + (ViewHeightDucked - ViewHeightStanding) * CrouchBlend;
+        EyePosition = Position + Vector3.UnitZ * BlendedEyeHeight;
+        camera.Location = EyePosition;
 
         // Draw player AABB for debugging
         /*
@@ -421,7 +478,7 @@ public class PlayerMovement
                 if (obstacle)
                 {
                     var (newPos, stepped) = TryStepMove(position, delta, aabb);
-                    if (stepped && (newPos - position).Length() > remainingDistance)
+                    if (stepped && (newPos - position).Length() + SurfaceEpsilon > remainingDistance)
                     {
                         return newPos;
                     }
@@ -429,7 +486,9 @@ public class PlayerMovement
             }
 
             // Move to hit point with surface epsilon
-            var adjustedDistance = Math.Max(result.Distance + SurfaceEpsilon / Vector3.Dot(Vector3.Normalize(remainingDelta), result.HitNormal), 0.0f);
+            // The inner Max() and sign changes are for numerical stability
+            var adjustedDistance = Math.Max(result.Distance - Math.Max(SurfaceEpsilon / Vector3.Dot(Vector3.Normalize(-remainingDelta), result.HitNormal), 0.0f), 0.0f);
+
             var fraction = adjustedDistance / remainingDistance;
 
             position += remainingDelta * fraction;
@@ -484,7 +543,7 @@ public class PlayerMovement
             return (start, false);
         }
 
-        var finalPosition = downTrace.HitPosition + downTrace.HitNormal * SurfaceEpsilon;
+        var finalPosition = downTrace.HitPosition + downTrace.HitNormal * (1f / (downTrace.HitNormal.Z * (StepSize + 2.0f))) * SurfaceEpsilon;
 
         // Validate the step
         var stepHeight = finalPosition.Z - start.Z;
@@ -737,7 +796,7 @@ public class PlayerMovement
             Velocity *= effectiveMaxSpeed / Velocity.Length();
         }
 
-        CheckVelocity(ref AABBCenteredPosition);
+        CheckVelocity(ref TracePosition);
     }
 
     /// <summary>
@@ -775,9 +834,9 @@ public class PlayerMovement
         var velUnchecked = Velocity;
         var posUnchecked = position;
 
-        position.X = float.IsNaN(position.X) ? AABBCenteredPosition.X : position.X;
-        position.Y = float.IsNaN(position.Y) ? AABBCenteredPosition.Y : position.Y;
-        position.Z = float.IsNaN(position.Z) ? AABBCenteredPosition.Z : position.Z;
+        position.X = float.IsNaN(position.X) ? TracePosition.X : position.X;
+        position.Y = float.IsNaN(position.Y) ? TracePosition.Y : position.Y;
+        position.Z = float.IsNaN(position.Z) ? TracePosition.Z : position.Z;
 
         var velocityBounds = new AABB(Vector3.Zero, MaxVelocityValue);
         Velocity = Vector3.Clamp(Velocity, velocityBounds.Min, velocityBounds.Max);
@@ -787,7 +846,7 @@ public class PlayerMovement
         position = Vector3.Clamp(position, movementBounds.Min, movementBounds.Max);
 
         // sanity check, compare against last position
-        movementBounds = new AABB(AABBCenteredPosition, MathF.Max(StepSize * 2f, Velocity.Length()));
+        movementBounds = new AABB(TracePosition, MathF.Max(StepSize * 2f, Velocity.Length()));
         position = Vector3.Clamp(position, movementBounds.Min, movementBounds.Max);
 
         var velocityError = Vector3.Distance(Velocity, velUnchecked) > 0.1f;
