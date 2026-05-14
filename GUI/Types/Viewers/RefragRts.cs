@@ -222,6 +222,11 @@ namespace GUI.Types.Viewers
                 CreateVisibilitySpansTab(tabControl);
             }
 
+            if (request?.RayTraceRequest?.DoorEvents.Count > 0)
+            {
+                CreateDoorEventsTab(tabControl);
+            }
+
             tabControl.SelectedIndex = 0;
         }
 
@@ -410,11 +415,12 @@ namespace GUI.Types.Viewers
             {
                 var rtr = request.RayTraceRequest;
                 sb.AppendLine("=== RT_ServerRequest ===");
-                sb.AppendLine($"Task ID  : {request.TaskId}");
-                sb.AppendLine($"Data URL : {request.DataUrl}");
-                sb.AppendLine($"Map      : {rtr?.MapName}");
-                sb.AppendLine($"Players  : {rtr?.Players.Count ?? 0}");
-                sb.AppendLine($"Ticks    : {rtr?.Ticks.Count   ?? 0}");
+                sb.AppendLine($"Task ID    : {request.TaskId}");
+                sb.AppendLine($"Data URL   : {request.DataUrl}");
+                sb.AppendLine($"Map        : {rtr?.MapName}");
+                sb.AppendLine($"Players    : {rtr?.Players.Count    ?? 0}");
+                sb.AppendLine($"Ticks      : {rtr?.Ticks.Count      ?? 0}");
+                sb.AppendLine($"Door Events: {rtr?.DoorEvents.Count ?? 0}");
                 if (rtr?.Players.Count > 0)
                 {
                     sb.AppendLine();
@@ -459,6 +465,27 @@ namespace GUI.Types.Viewers
             }
 
             var page = new ThemedTabPage("VISIBILITY SPANS");
+            page.Controls.Add(CodeTextBox.Create(sb.ToString(), CodeTextBox.HighlightLanguage.None));
+            tabControl.Controls.Add(page);
+        }
+
+        private void CreateDoorEventsTab(ThemedTabControl tabControl)
+        {
+            var doorEvents = request?.RayTraceRequest?.DoorEvents ?? [];
+            var sb = new StringBuilder();
+            sb.AppendLine($"{"#",-6} {"Tick",-10} {"Event",-12} {"Type",-24} {"X",10} {"Y",10} {"Z",10} {"AngX",8} {"AngY",8}");
+            sb.AppendLine(new string('-', 102));
+            var i = 0;
+            foreach (var e in doorEvents.OrderBy(e => e.Tick))
+            {
+                sb.AppendLine(
+                              $"{i,-6} {e.Tick,-10} {e.EventName,-12} {e.EntityType,-24} {e.X,10:F1} {e.Y,10:F1} {e.Z,10:F1} {e.AngX,8:F2} {e.AngY,8:F2}"
+                             );
+
+                i++;
+            }
+
+            var page = new ThemedTabPage("DOOR EVENTS");
             page.Controls.Add(CodeTextBox.Create(sb.ToString(), CodeTextBox.HighlightLanguage.None));
             tabControl.Controls.Add(page);
         }
