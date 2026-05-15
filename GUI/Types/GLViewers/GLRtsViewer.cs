@@ -52,10 +52,10 @@ namespace GUI.Types.GLViewers
         // Door/breakable events sorted by tick (fed from proto door_events)
         private readonly IReadOnlyList<RTSDoorEvent> _doorEvents;
 
-        private readonly string             mapName;
-        private readonly int                tickMin;
-        private readonly int                tickMax;
-        private readonly IReadOnlyList<int> sortedTickIds;
+        private readonly string    mapName;
+        private readonly int       tickMin;
+        private readonly int       tickMax;
+        private readonly List<int> sortedTickIds;
 
         // ── Runtime state ────────────────────────────────────────────────────
 
@@ -127,25 +127,23 @@ namespace GUI.Types.GLViewers
             this.ticks   = ticks      ?? new Dictionary<int, Dictionary<ulong, PlayerTickState>>();
             _doorEvents  = doorEvents ?? [];
 
-            // Build sorted tick id list from whichever source has data
-            var tickIds = this.ticks.Count > 0
+            sortedTickIds = this.ticks.Count > 0
                 ? this.ticks.Keys.OrderBy(t => t).ToList()
-                : (IReadOnlyList<int>)Array.Empty<int>();
-
-            sortedTickIds = tickIds;
+                : [];
 
             // Pre-index smokes by tick — must come after sortedTickIds is assigned
             smokesByTick = BuildSmokesByTick(smokesList ?? []);
 
-            if (spans.Count > 0)
-            {
-                tickMin = spans.Min(s => s.FirstTick);
-                tickMax = spans.Max(s => s.LastTick);
-            }
-            else if (sortedTickIds.Count > 0)
+            // Tick range: prefer the actual tick data (covers all ticks), fall back to spans
+            if (sortedTickIds.Count > 0)
             {
                 tickMin = sortedTickIds[0];
                 tickMax = sortedTickIds[^1];
+            }
+            else if (spans.Count > 0)
+            {
+                tickMin = spans.Min(s => s.FirstTick);
+                tickMax = spans.Max(s => s.LastTick);
             }
 
             currentTick = tickMin;
@@ -256,7 +254,16 @@ namespace GUI.Types.GLViewers
                 {
                     tickScrubber = UiControl.AddTrackBar(v =>
                                                          {
-                                                             currentTick  = tickMin + (int)(v * (tickMax - tickMin));
+                                                             if (sortedTickIds.Count > 0)
+                                                             {
+                                                                 var idx = (int)Math.Round(v * (sortedTickIds.Count - 1));
+                                                                 currentTick = sortedTickIds[Math.Clamp(idx, 0, sortedTickIds.Count - 1)];
+                                                             }
+                                                             else
+                                                             {
+                                                                 currentTick = tickMin + (int)(v * (tickMax - tickMin));
+                                                             }
+
                                                              overlayDirty = true;
                                                              GLControl?.BeginInvoke(() =>
                                                                                     {
@@ -453,9 +460,19 @@ namespace GUI.Types.GLViewers
         {
             currentTick  = tick;
             overlayDirty = true;
-            var sliderVal = (tickMax > tickMin)
-                ? (float)(tick - tickMin) / (tickMax - tickMin)
-                : 0f;
+            float sliderVal;
+            if (sortedTickIds.Count > 1)
+            {
+                var idx = sortedTickIds.BinarySearch(tick);
+                if (idx < 0)
+                    idx = Math.Clamp(~idx, 0, sortedTickIds.Count - 1);
+
+                sliderVal = (float)idx / (sortedTickIds.Count - 1);
+            }
+            else
+            {
+                sliderVal = 0f;
+            }
 
             GLControl?.BeginInvoke(() =>
                                    {
